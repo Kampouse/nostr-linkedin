@@ -5,14 +5,15 @@
  * Falls back gracefully for NIP-07/NIP-46 (can decrypt via extension/signer).
  */
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useCallback, useRef } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Send, MessageCircle, Search } from "lucide-react";
+import { Send, MessageCircle, Search, Loader2 } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../hooks/useAuth";
 import {
-  pool, npubFromHex, hexFromNpub, fetchProfile, fetchProfiles,
+  pool, npubFromHex, fetchProfiles,
   shortenPubkey, publishEvent, timeAgo,
-  READ_RELAYS, WRITE_RELAYS, NIP46_RELAYS,
+  READ_RELAYS,
   type UserProfile, type Event,
 } from "../lib/nostr";
 import * as nip04 from "nostr-tools/nip04";
@@ -24,26 +25,16 @@ interface DM {
   createdAt: number;
 }
 
-interface Conversation {
-  peer: string;
-  profile: UserProfile;
-  lastMessage: string;
-  lastTime: number;
-  unread: number;
-  messages: DM[];
-}
-
 export default function MessagingPage() {
   const { pubkey, secretKey, signer, signAndPublish } = useAuth();
   const [searchParams] = useSearchParams();
   const dmTarget = searchParams.get("dm");
-  const [conversations, setConversations] = useState<Map<string, DM[]>>(new Map());
-  const [profiles, setProfiles] = useState<Map<string, UserProfile>>(new Map());
   const [activePeer, setActivePeer] = useState<string | null>(dmTarget);
   const [compose, setCompose] = useState("");
   const [sending, setSending] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const queryClient = useQueryClient();
 
   // Decrypt a NIP-04 DM
   const decryptDm = useCallback(async (event: Event): Promise<string> => {
@@ -51,78 +42,105 @@ export default function MessagingPage() {
     if (secretKey) {
       return nip04.decrypt(secretKey, peer, event.content);
     }
-    // NIP-46 signer
-    if (signer) {
-      return signer.nip04Decrypt(peer, event.content);
-    }
     // NIP-07 extension
     if (typeof window !== "undefined" && (window as any).nostr?.nip04?.decrypt) {
       return (window as any).nostr.nip04.decrypt(peer, event.content);
     }
+    // NIP-46 signer
+    if (signer) {
+      return signer.nip04Decrypt(peer, event.content);
+    }
     return "[Encrypted — login to decrypt]";
   }, [pubkey, secretKey, signer]);
 
-  // Load DMs
-  const loadMessages = useCallback(async () => {
-    if (!pubkey) return;
+  // Load and decrypt DMs via TanStack Query
+  const { data: convData, isPending } = useQuery({
+    queryKey: ["dms", pubkey],
+    queryFn: async () => {
+      if (!pubkey) return { conversations: new Map<string, DM[]>(), profiles: new Map<string, UserProfile>() };
 
-    // Fetch kind 4 DMs sent to us and by us
-    const [received, sent] = await Promise.all([
-      pool.querySync(READ_RELAYS, { kinds: [4], "#p": [pubkey], limit: 100 }),
-      pool.querySync(READ_RELAYS, { kinds: [4], authors: [pubkey], limit: 100 }),
-    ]);
+      // Fetch kind 4 DMs sent to us and by us in parallel
+      const [received, sent] = await Promise.all([
+        pool.querySync(READ_RELAYS, { kinds: [4], "#p": [pubkey], limit: 100 }),
+        pool.querySync(READ_RELAYS, { kinds: [4], authors: [pubkey], limit: 100 }),
+      ]);
 
-    const all = [...received, ...sent].sort((a, b) => b.created_at - a.created_at);
+      const all = [...received, ...sent].sort((a, b) => b.created_at - a.created_at);
 
-    // Group by peer
-    const grouped = new Map<string, DM[]>();
-    for (const ev of all) {
-      const peer = ev.pubkey === pubkey ? ev.tags.find(t => t[0] === "p")?.[1] : ev.pubkey;
-      if (!peer) continue;
+      // Decrypt in parallel batches of 10 to avoid blocking
+      const grouped = new Map<string, DM[]>();
+      const decryptBatch = async (events: Event[]) => {
+        const results = await Promise.allSettled(
+          events.map(async ev => {
+            const peer = ev.pubkey === pubkey ? ev.tags.find(t => t[0] === "p")?.[1] : ev.pubkey;
+            if (!peer) return null;
+            let plaintext = "";
+            try {
+              plaintext = await decryptDm(ev);
+            } catch {
+              plaintext = "[Could not decrypt]";
+            }
+            return { event: ev, peer, plaintext, createdAt: ev.created_at } as DM;
+          })
+        );
+        for (const r of results) {
+          if (r.status === "fulfilled" && r.value) {
+            const dm = r.value;
+            const existing = grouped.get(dm.peer) || [];
+            existing.push(dm);
+            grouped.set(dm.peer, existing);
+          }
+        }
+      };
 
-      let plaintext = "";
-      try {
-        plaintext = await decryptDm(ev);
-      } catch {
-        plaintext = "[Could not decrypt]";
+      // Process in batches of 10
+      for (let i = 0; i < all.length; i += 10) {
+        await decryptBatch(all.slice(i, i + 10));
       }
 
-      const dm: DM = { event: ev, peer, plaintext, createdAt: ev.created_at };
-      const existing = grouped.get(peer) || [];
-      existing.push(dm);
-      grouped.set(peer, existing);
-    }
+      // Sort each conversation by time
+      for (const [peer, msgs] of grouped) {
+        msgs.sort((a, b) => a.createdAt - b.createdAt);
+        grouped.set(peer, msgs);
+      }
 
-    setConversations(grouped);
+      // Load profiles for all peers
+      const peers = [...grouped.keys()];
+      const profilesMap = new Map<string, UserProfile>();
+      if (peers.length > 0) {
+        const pMap = await fetchProfiles(peers);
+        for (const [k, v] of pMap) profilesMap.set(k, v);
+      }
 
-    // Load profiles for all peers
-    const peers = [...grouped.keys()];
-    if (peers.length > 0) {
-      const pMap = await fetchProfiles(peers);
-      setProfiles(pMap);
-    }
-  }, [pubkey, decryptDm]);
+      return { conversations: grouped, profiles: profilesMap };
+    },
+    enabled: !!pubkey,
+    placeholderData: (prev: any) => prev,
+    staleTime: 30_000,
+  });
 
-  useEffect(() => { loadMessages(); }, [loadMessages]);
+  const conversations = convData?.conversations ?? new Map<string, DM[]>();
+  const profiles = convData?.profiles ?? new Map<string, UserProfile>();
 
-  // Ensure DM target peer exists in conversations and profile loaded
-  useEffect(() => {
-    if (!dmTarget) return;
-    setConversations(prev => {
-      if (prev.has(dmTarget)) return prev;
-      const next = new Map(prev);
-      next.set(dmTarget, []);
-      return next;
-    });
+  // Ensure DM target peer exists
+  const effectiveConversations = (() => {
+    if (!dmTarget || conversations.has(dmTarget)) return conversations;
+    const next = new Map(conversations);
+    next.set(dmTarget, []);
+    return next;
+  })();
+
+  // Load DM target profile if needed
+  const effectiveProfiles = profiles;
+  if (dmTarget && !profiles.has(dmTarget)) {
     fetchProfiles([dmTarget]).then(pMap => {
-      setProfiles(prev => new Map([...prev, ...pMap]));
+      queryClient.setQueryData(["dms", pubkey], (old: any) => {
+        if (!old) return old;
+        const merged = new Map([...old.profiles, ...pMap]);
+        return { ...old, profiles: merged };
+      });
     });
-  }, [dmTarget]);
-
-  // Scroll to bottom on new messages
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [conversations, activePeer]);
+  }
 
   // Send a DM
   const sendMessage = useCallback(async () => {
@@ -134,40 +152,41 @@ export default function MessagingPage() {
       let ciphertext: string;
       if (secretKey) {
         ciphertext = await nip04.encrypt(secretKey, activePeer, text);
-      } else if (signer) {
-        ciphertext = await signer.nip04Encrypt(activePeer, text);
       } else if (typeof window !== "undefined" && (window as any).nostr?.nip04?.encrypt) {
         ciphertext = await (window as any).nostr.nip04.encrypt(activePeer, text);
+      } else if (signer) {
+        ciphertext = await signer.nip04Encrypt(activePeer, text);
       } else {
         throw new Error("No encryption available — login to send DMs");
       }
 
-      // Publish the DM
       await signAndPublish({ kind: 4, content: ciphertext, tags: [["p", activePeer]] });
-      await loadMessages(); // refresh
+      queryClient.invalidateQueries({ queryKey: ["dms", pubkey] });
     } catch (e: any) {
       console.error("send error:", e.message);
       alert("Failed to send: " + e.message);
-      setCompose(text); // restore on failure
+      setCompose(text);
     }
     setSending(false);
-  }, [activePeer, compose, secretKey, signAndPublish, loadMessages]);
+  }, [activePeer, compose, secretKey, signer, signAndPublish, pubkey, queryClient]);
 
-  const peers = [...conversations.keys()].sort((a, b) => {
-    const aLast = conversations.get(a)?.[0]?.createdAt || 0;
-    const bLast = conversations.get(b)?.[0]?.createdAt || 0;
+  const peers = [...effectiveConversations.keys()].sort((a, b) => {
+    const aMsgs = effectiveConversations.get(a) || [];
+    const bMsgs = effectiveConversations.get(b) || [];
+    const aLast = aMsgs[aMsgs.length - 1]?.createdAt || 0;
+    const bLast = bMsgs[bMsgs.length - 1]?.createdAt || 0;
     return bLast - aLast;
   });
 
   const filteredPeers = searchQuery
     ? peers.filter(pk => {
-        const p = profiles.get(pk);
+        const p = effectiveProfiles.get(pk);
         const name = p?.display_name || p?.name || "";
         return name.toLowerCase().includes(searchQuery.toLowerCase()) || pk.includes(searchQuery);
       })
     : peers;
 
-  const activeMessages = activePeer ? (conversations.get(activePeer) || []) : [];
+  const activeMessages = activePeer ? (effectiveConversations.get(activePeer) || []) : [];
 
   return (
     <div style={{ maxWidth: 555, margin: "0 auto", width: "100%", height: "calc(100vh - 120px)", display: "flex", flexDirection: "column" }}>
@@ -194,7 +213,11 @@ export default function MessagingPage() {
             </div>
           </div>
 
-          {filteredPeers.length === 0 ? (
+          {isPending && effectiveConversations.size === 0 ? (
+            <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 10, color: "var(--text-muted)" }}>
+              <Loader2 size={20} className="spin" /> Decrypting messages…
+            </div>
+          ) : filteredPeers.length === 0 ? (
             <div className="empty-state" style={{ padding: 48 }}>
               <MessageCircle size={48} strokeWidth={1} color="var(--text-muted)" />
               <p style={{ fontSize: 16, fontWeight: 600 }}>No messages yet</p>
@@ -203,11 +226,11 @@ export default function MessagingPage() {
           ) : (
             <div style={{ overflowY: "auto", flex: 1 }}>
               {filteredPeers.map(pk => {
-                const p = profiles.get(pk);
+                const p = effectiveProfiles.get(pk);
                 const name = p?.display_name || p?.name || shortenPubkey(pk);
                 const pic = p?.picture;
-                const msgs = conversations.get(pk) || [];
-                const lastMsg = msgs[0];
+                const msgs = effectiveConversations.get(pk) || [];
+                const lastMsg = msgs[msgs.length - 1];
                 const preview = lastMsg?.plaintext.slice(0, 60) || "";
 
                 return (
@@ -263,7 +286,7 @@ export default function MessagingPage() {
             <Link to={`/in/${npubFromHex(activePeer)}`} style={{ textDecoration: "none" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 {(() => {
-                  const p = profiles.get(activePeer);
+                  const p = effectiveProfiles.get(activePeer);
                   const name = p?.display_name || p?.name || shortenPubkey(activePeer);
                   const pic = p?.picture;
                   return (
@@ -287,23 +310,29 @@ export default function MessagingPage() {
 
           {/* Messages */}
           <div style={{ flex: 1, overflowY: "auto", padding: "16px 20px", display: "flex", flexDirection: "column", gap: 8 }}>
-            {[...activeMessages].reverse().map(dm => {
-              const isMine = dm.event.pubkey === pubkey;
-              return (
-                <div key={dm.event.id} style={{
-                  maxWidth: "75%", alignSelf: isMine ? "flex-end" : "flex-start",
-                  padding: "10px 14px", borderRadius: 16,
-                  background: isMine ? "var(--accent)" : "var(--surface)",
-                  color: isMine ? "#fff" : "var(--text)",
-                  fontSize: 14, lineHeight: 1.4,
-                }}>
-                  {dm.plaintext}
-                  <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4, textAlign: "right" }}>
-                    {timeAgo(dm.createdAt)}
+            {isPending && activeMessages.length === 0 ? (
+              <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 10, color: "var(--text-muted)" }}>
+                <Loader2 size={20} className="spin" /> Decrypting…
+              </div>
+            ) : (
+              [...activeMessages].map(dm => {
+                const isMine = dm.event.pubkey === pubkey;
+                return (
+                  <div key={dm.event.id} style={{
+                    maxWidth: "75%", alignSelf: isMine ? "flex-end" : "flex-start",
+                    padding: "10px 14px", borderRadius: 16,
+                    background: isMine ? "var(--accent)" : "var(--surface)",
+                    color: isMine ? "#fff" : "var(--text)",
+                    fontSize: 14, lineHeight: 1.4,
+                  }}>
+                    {dm.plaintext}
+                    <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4, textAlign: "right" }}>
+                      {timeAgo(dm.createdAt)}
+                    </div>
                   </div>
-                </div>
-              );
-            })}
+                );
+              })
+            )}
             <div ref={messagesEndRef} />
           </div>
 
