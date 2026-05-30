@@ -165,39 +165,28 @@ export default function PostDetailPage({ postId: postIdProp }: { postId?: string
         {/* Main post — reuse PostCard for identical UI */}
         <PostCard post={post} profile={authorProfile ?? undefined} />
 
-        {/* Who reacted — expandable list */}
+        {/* Reaction counts — compact emoji badges */}
         {reactions.length > 0 && (
-          <div style={{ borderBottom: "1px solid var(--surface-border)" }}>
-            <div style={{ padding: "10px 20px", fontSize: 13, fontWeight: 600, color: "var(--text-secondary)" }}>
-              Reacted
-            </div>
-            {reactions.slice(0, 20).map(r => {
-              const rp = profiles.get(r.pubkey);
-              const rName = rp?.display_name || rp?.name || shortenPubkey(r.pubkey);
-              const rPic = rp?.picture;
-              const emoji = r.content || "+";
+          <div style={{
+            padding: "8px 20px", borderBottom: "1px solid var(--surface-border)",
+            display: "flex", gap: 8, flexWrap: "wrap",
+          }}>
+            {[...emojiGroups.entries()].sort((a, b) => b[1].count - a[1].count).map(([emoji, { count }]) => {
               const displayEmoji = emoji === "+" ? "👍" : emoji === "-" ? "👎" : emoji;
               return (
-                <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 20px" }}>
-                  <Link to={`/in/${npubFromHex(r.pubkey)}`}>
-                    <div style={{
-                      width: 28, height: 28, borderRadius: "50%",
-                      background: rPic ? "#262626" : "linear-gradient(135deg, #10b981, #059669)",
-                      overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center",
-                    }}>
-                      {rPic ? <img src={rPic} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : (
-                        <span style={{ color: "#fff", fontWeight: 600, fontSize: 11 }}>{rName.slice(0, 1).toUpperCase()}</span>
-                      )}
-                    </div>
-                  </Link>
-                  <Link to={`/in/${npubFromHex(r.pubkey)}`} style={{ flex: 1, fontSize: 13, fontWeight: 500, color: "var(--text)", textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {rName}
-                  </Link>
-                  <span style={{ fontSize: 18 }}>{displayEmoji}</span>
-                  <span style={{ fontSize: 11, color: "var(--text-muted)", minWidth: 50, textAlign: "right" }}>{timeAgo(r.created_at)}</span>
-                </div>
+                <span key={emoji} style={{
+                  display: "inline-flex", alignItems: "center", gap: 4,
+                  padding: "4px 10px", borderRadius: 16,
+                  background: "var(--surface)", border: "1px solid var(--surface-border)",
+                  fontSize: 13, color: "var(--text-secondary)",
+                }}>
+                  {displayEmoji} {count}
+                </span>
               );
             })}
+            <span style={{ fontSize: 12, color: "var(--text-muted)", alignSelf: "center", marginLeft: 4 }}>
+              {reactions.length} reaction{reactions.length !== 1 ? "s" : ""}
+            </span>
           </div>
         )}
 
