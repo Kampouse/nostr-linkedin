@@ -54,7 +54,7 @@ export default function MessagingPage() {
   }, [pubkey, secretKey, signer]);
 
   // Load and decrypt DMs via TanStack Query
-  const { data: convData, isPending } = useQuery({
+  const { data: convData, isPending, error } = useQuery({
     queryKey: ["dms", pubkey],
     queryFn: async () => {
       if (!pubkey) return { conversations: new Map<string, DM[]>(), profiles: new Map<string, UserProfile>() };
@@ -66,43 +66,39 @@ export default function MessagingPage() {
       ]);
 
       const all = [...received, ...sent].sort((a, b) => b.created_at - a.created_at);
+      console.log("[messaging] fetched", all.length, "DMs");
 
-      // Decrypt in parallel batches of 10 to avoid blocking
+      // Decrypt all in parallel (batched)
       const grouped = new Map<string, DM[]>();
-      const decryptBatch = async (events: Event[]) => {
-        const results = await Promise.allSettled(
-          events.map(async ev => {
-            const peer = ev.pubkey === pubkey ? ev.tags.find(t => t[0] === "p")?.[1] : ev.pubkey;
-            if (!peer) return null;
-            let plaintext = "";
-            try {
-              plaintext = await decryptDm(ev);
-            } catch {
-              plaintext = "[Could not decrypt]";
-            }
-            return { event: ev, peer, plaintext, createdAt: ev.created_at } as DM;
-          })
-        );
-        for (const r of results) {
-          if (r.status === "fulfilled" && r.value) {
-            const dm = r.value;
-            const existing = grouped.get(dm.peer) || [];
-            existing.push(dm);
-            grouped.set(dm.peer, existing);
+      const decryptResults = await Promise.allSettled(
+        all.map(async ev => {
+          const peer = ev.pubkey === pubkey ? ev.tags.find(t => t[0] === "p")?.[1] : ev.pubkey;
+          if (!peer) return null;
+          let plaintext = "";
+          try {
+            plaintext = await decryptDm(ev);
+          } catch (err) {
+            plaintext = "[Could not decrypt]";
           }
-        }
-      };
+          return { event: ev, peer, plaintext, createdAt: ev.created_at } as DM;
+        })
+      );
 
-      // Process in batches of 10
-      for (let i = 0; i < all.length; i += 10) {
-        await decryptBatch(all.slice(i, i + 10));
+      for (const r of decryptResults) {
+        if (r.status === "fulfilled" && r.value) {
+          const dm = r.value;
+          const existing = grouped.get(dm.peer) || [];
+          existing.push(dm);
+          grouped.set(dm.peer, existing);
+        }
       }
 
       // Sort each conversation by time
       for (const [peer, msgs] of grouped) {
         msgs.sort((a, b) => a.createdAt - b.createdAt);
-        grouped.set(peer, msgs);
       }
+
+      console.log("[messaging] decrypted", grouped.size, "conversations");
 
       // Load profiles for all peers
       const peers = [...grouped.keys()];
@@ -118,6 +114,10 @@ export default function MessagingPage() {
     placeholderData: (prev: any) => prev,
     staleTime: 30_000,
   });
+
+  if (error) {
+    console.error("[messaging] query error:", error);
+  }
 
   const conversations = convData?.conversations ?? new Map<string, DM[]>();
   const profiles = convData?.profiles ?? new Map<string, UserProfile>();
