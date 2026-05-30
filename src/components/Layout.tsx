@@ -159,7 +159,7 @@ export default function Layout({ children }: { children: ReactNode }) {
   const navItems: { id: string; icon: typeof Home; label: string; path: string }[] = [
     { id: "feed", icon: Home, label: "Home", path: "/" },
     { id: "network", icon: Users, label: "My Network", path: "/network" },
-    { id: "jobs", icon: Briefcase, label: "Jobs", path: "/jobs" },
+    { id: "jobs", icon: Briefcase, label: "Marketplace", path: "/jobs" },
     { id: "messaging", icon: MessageCircle, label: "Messaging", path: "/messaging" },
     { id: "notifications", icon: Bell, label: "Notifications", path: "/notifications" },
   ];

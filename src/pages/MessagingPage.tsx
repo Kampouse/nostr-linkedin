@@ -198,7 +198,7 @@ export default function MessagingPage() {
             <div className="empty-state" style={{ padding: 48 }}>
               <MessageCircle size={48} strokeWidth={1} color="var(--text-muted)" />
               <p style={{ fontSize: 16, fontWeight: 600 }}>No messages yet</p>
-              <p>Start a conversation by sending a DM to any Nostr profile.</p>
+              <p>{pubkey ? "Start a conversation by sending a DM to any Nostr profile." : "Sign in to send and receive private messages."}</p>
             </div>
           ) : (
             <div style={{ overflowY: "auto", flex: 1 }}>

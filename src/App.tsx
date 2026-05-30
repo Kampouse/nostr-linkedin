@@ -149,8 +149,35 @@ function AppRoutes() {
     );
   }
 
-  // Everything else — feed, network, jobs, etc. (works for both logged-in and logged-out)
-  return <KeepAliveRouter />;
+  // Post detail routes
+  const postMatch = matchPath("/post/:id", location.pathname);
+  if (postMatch?.params.id) {
+    return (
+      <Suspense fallback={<FeedSkeleton />}>
+        <PostDetailPage postId={postMatch.params.id} />
+      </Suspense>
+    );
+  }
+
+  // Known routes — feed, network, jobs, messaging, notifications
+  const knownRoutes = ["/", "/feed", "/network", "/jobs", "/messaging", "/notifications"];
+  if (knownRoutes.includes(location.pathname)) {
+    return <KeepAliveRouter />;
+  }
+
+  // 404 — unknown route
+  return (
+    <div style={{ maxWidth: 480, margin: "80px auto", textAlign: "center", padding: 40 }}>
+      <div style={{ fontSize: 64, marginBottom: 16 }}>404</div>
+      <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 8 }}>Page not found</h2>
+      <p style={{ color: "var(--text-muted)", fontSize: 15, marginBottom: 24 }}>
+        The page you're looking for doesn't exist.
+      </p>
+      <a href="/" style={{ color: "var(--accent)", fontWeight: 600, textDecoration: "none", fontSize: 15 }}>
+        ← Back to home
+      </a>
+    </div>
+  );
 }
 
 export default function App() {

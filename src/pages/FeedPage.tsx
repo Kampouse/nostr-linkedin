@@ -30,13 +30,14 @@ export default function FeedPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [showEmoji, setShowEmoji] = useState(false);
   const [showTopics, setShowTopics] = useState(false);
-  const [feedSort, setFeedSort] = useState<"trending" | "latest" | "popular" | "mostzapped">("trending");
+  type FeedSort = "trending" | "latest" | "popular" | "zapped";
+  const [feedSort, setFeedSort] = useState<FeedSort>("trending");
 
   const sortOptions = [
     { key: "trending" as const, label: "Trending", icon: TrendingUp },
     { key: "latest" as const, label: "Latest", icon: Clock },
     { key: "popular" as const, label: "Popular", icon: Heart },
-    { key: "mostzapped" as const, label: "Most Zapped", icon: ZapIcon },
+    { key: "zapped" as const, label: "Most Zapped", icon: ZapIcon },
   ];
 
   // Login state
@@ -80,7 +81,7 @@ export default function FeedPage() {
       return { posts: filtered, profiles: allProfiles };
     },
     initialPageParam: undefined as number | undefined,
-    getNextPageParam: (lastPage: { posts: Event[] }) => {
+    getNextPageParam: (lastPage: { posts: Event[]; profiles: Map<string, UserProfile> }) => {
       if (lastPage.posts.length === 0) return undefined;
       // Use oldest post timestamp as cursor for next page
       const oldest = lastPage.posts[lastPage.posts.length - 1];
@@ -619,9 +620,46 @@ export default function FeedPage() {
         <div className="card" style={{ marginTop: 8 }}>
           <div className="discovery-card">
             <h4>People you may know</h4>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '8px 0' }}>
-              Connect with more people on Nostr to grow your network.
-            </div>
+            {posts.length === 0 ? (
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '8px 0' }}>
+                Loading…
+              </div>
+            ) : (
+              <>
+                {posts
+                  .filter(p => p.content && p.content.length > 40)
+                  .slice(0, 3)
+                  .map(post => {
+                    const author = profiles.get(post.pubkey);
+                    const name = author?.display_name || author?.name || "Anonymous";
+                    const pic = author?.picture;
+                    const npub = npubFromHex(post.pubkey);
+                    return (
+                      <Link key={post.pubkey} to={`/in/${npub}`} style={{ textDecoration: 'none', color: 'inherit' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0' }}>
+                          <div style={{
+                            width: 36, height: 36, borderRadius: '50%', flexShrink: 0,
+                            background: pic ? `url(${pic}) center/cover` : 'linear-gradient(135deg, #10b981, #059669)',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            color: '#fff', fontWeight: 600, fontSize: 14,
+                          }}>
+                            {pic ? '' : name.slice(0, 1).toUpperCase()}
+                          </div>
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontWeight: 600, fontSize: 13 }}>{name}</div>
+                            <div style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {(author?.about || '').slice(0, 50)}
+                            </div>
+                          </div>
+                        </div>
+                      </Link>
+                    );
+                  })}
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: '4px 0', borderTop: '1px solid var(--surface-border)', marginTop: 4 }}>
+                  Sign in to connect with more people on Nostr.
+                </div>
+              </>
+            )}
           </div>
         </div>
       </aside>

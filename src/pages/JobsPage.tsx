@@ -2,18 +2,21 @@
  * JobsPage.tsx — LinkedIn-style jobs page
  */
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
+import { Link } from "react-router-dom";
 import { Briefcase, MapPin, Clock, Bookmark, BookmarkCheck, Building2, Globe, DollarSign, Filter } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import {
   fetchJobs,
   fetchProfiles,
   timeAgo,
-  shortenPubkey,
   npubFromHex,
   type UserProfile,
   type JobListing,
 } from "../lib/nostr";
+
+type DateFilter = "any" | "24h" | "week" | "month";
+type LocFilter = "any" | "remote" | "onsite" | "hybrid";
 
 export default function JobsPage() {
   const [saved, setSaved] = useState<Set<string>>(() => {
@@ -23,6 +26,8 @@ export default function JobsPage() {
     } catch { return new Set(); }
   });
   const [selectedJob, setSelectedJob] = useState<string | null>(null);
+  const [dateFilter, setDateFilter] = useState<DateFilter>("any");
+  const [locFilter, setLocFilter] = useState<LocFilter>("any");
 
   const { data = { jobs: [] as JobListing[], profiles: new Map<string, UserProfile>() } } = useQuery({
     queryKey: ["jobs"],
@@ -42,6 +47,28 @@ export default function JobsPage() {
   const jobs = data.jobs;
   const profiles = data.profiles;
 
+  // Apply filters
+  const filteredJobs = useMemo(() => {
+    const now = Math.floor(Date.now() / 1000);
+    return jobs.filter(job => {
+      // Date filter
+      if (dateFilter !== "any") {
+        const age = now - job.event.created_at;
+        if (dateFilter === "24h" && age > 86400) return false;
+        if (dateFilter === "week" && age > 604800) return false;
+        if (dateFilter === "month" && age > 2592000) return false;
+      }
+      // Location filter
+      if (locFilter !== "any") {
+        const loc = (job.location || "").toLowerCase();
+        if (locFilter === "remote" && !loc.includes("remote") && !loc.includes("online") && !loc.includes("global")) return false;
+        if (locFilter === "onsite" && (loc.includes("remote") || loc.includes("online"))) return false;
+        if (locFilter === "hybrid" && !loc.includes("hybrid")) return false;
+      }
+      return true;
+    });
+  }, [jobs, dateFilter, locFilter]);
+
   const toggleSave = (id: string) => {
     setSaved(prev => {
       const next = new Set(prev);
@@ -51,7 +78,7 @@ export default function JobsPage() {
     });
   };
 
-  const active = selectedJob ? jobs.find(j => (j.event.id + j.d) === selectedJob) : null;
+  const active = selectedJob ? filteredJobs.find(j => (j.event.id + j.d) === selectedJob) : null;
   const activeProfile = active ? profiles.get(active.event.pubkey) : null;
 
   return (
@@ -67,19 +94,29 @@ export default function JobsPage() {
           <div style={{ padding: 16 }}>
             <div style={{ marginBottom: 20 }}>
               <label style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: 0.5 }}>Date Posted</label>
-              {["Any time", "Past 24h", "Past week", "Past month"].map((label, i) => (
-                <label key={label} style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, cursor: "pointer", fontSize: 14 }}>
-                  <input type="radio" name="date" defaultChecked={i === 0} style={{ accentColor: "var(--accent)" }} />
-                  {label}
+              {([
+                { value: "any" as DateFilter, label: "Any time" },
+                { value: "24h" as DateFilter, label: "Past 24h" },
+                { value: "week" as DateFilter, label: "Past week" },
+                { value: "month" as DateFilter, label: "Past month" },
+              ]).map(opt => (
+                <label key={opt.value} style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, cursor: "pointer", fontSize: 14 }}>
+                  <input type="radio" name="date" checked={dateFilter === opt.value} onChange={() => setDateFilter(opt.value)} style={{ accentColor: "var(--accent)" }} />
+                  {opt.label}
                 </label>
               ))}
             </div>
             <div style={{ marginBottom: 20 }}>
               <label style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: 0.5 }}>Location Type</label>
-              {["Any", "Remote", "On-site", "Hybrid"].map((label, i) => (
-                <label key={label} style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, cursor: "pointer", fontSize: 14 }}>
-                  <input type="radio" name="loc" defaultChecked={i === 0} style={{ accentColor: "var(--accent)" }} />
-                  {label}
+              {([
+                { value: "any" as LocFilter, label: "Any" },
+                { value: "remote" as LocFilter, label: "Remote" },
+                { value: "onsite" as LocFilter, label: "On-site" },
+                { value: "hybrid" as LocFilter, label: "Hybrid" },
+              ]).map(opt => (
+                <label key={opt.value} style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, cursor: "pointer", fontSize: 14 }}>
+                  <input type="radio" name="loc" checked={locFilter === opt.value} onChange={() => setLocFilter(opt.value)} style={{ accentColor: "var(--accent)" }} />
+                  {opt.label}
                 </label>
               ))}
             </div>
@@ -102,24 +139,24 @@ export default function JobsPage() {
           }}>
             <div>
               <h2 style={{ fontSize: 20, fontWeight: 700, display: "flex", alignItems: "center", gap: 10 }}>
-                <Briefcase size={22} color="var(--accent)" /> Jobs
+                <Briefcase size={22} color="var(--accent)" /> Marketplace
               </h2>
               <p style={{ color: "var(--text-muted)", fontSize: 13, marginTop: 4 }}>
-                {jobs.length} listing{jobs.length !== 1 ? "s" : ""} on Nostr
+                {filteredJobs.length} listing{filteredJobs.length !== 1 ? "s" : ""} on Nostr
               </p>
             </div>
           </div>
 
-          {jobs.length === 0 ? (
+          {filteredJobs.length === 0 ? (
             <div className="empty-state">
               <Briefcase size={48} strokeWidth={1} color="var(--text-muted)" />
-              <p style={{ fontSize: 16, fontWeight: 600 }}>No job listings found</p>
-              <p style={{ color: "var(--text-muted)", fontSize: 14 }}>Jobs are posted as NIP-99 listings (kind 30402).</p>
+              <p style={{ fontSize: 16, fontWeight: 600 }}>No listings found</p>
+              <p style={{ color: "var(--text-muted)", fontSize: 14 }}>Try adjusting your filters.</p>
             </div>
           ) : (
-            jobs.map((job) => {
+            filteredJobs.map((job) => {
               const author = profiles.get(job.event.pubkey);
-              const name = author?.display_name || author?.name || shortenPubkey(job.event.pubkey);
+              const name = author?.display_name || author?.name || "Anonymous";
               const pic = author?.picture;
               const key = job.event.id + job.d;
               const isSelected = selectedJob === key;
@@ -222,8 +259,9 @@ function JobDetail({ job, profile, saved, onToggleSave, onClose }: {
   onToggleSave: () => void;
   onClose: () => void;
 }) {
-  const name = profile?.display_name || profile?.name || shortenPubkey(job.event.pubkey);
+  const name = profile?.display_name || profile?.name || "Anonymous";
   const pic = profile?.picture;
+  const npub = npubFromHex(job.event.pubkey);
   return (
     <>
       {/* Back button */}
@@ -310,14 +348,12 @@ function JobDetail({ job, profile, saved, onToggleSave, onClose }: {
       {/* Poster */}
       <div style={{ padding: "16px 24px", borderTop: "1px solid var(--surface-border)" }}>
         <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 8 }}>Posted by</div>
-        <a
-          href={`https://in.jemartel.dev/in/${npubFromHex(job.event.pubkey)}`}
-          target="_blank"
-          rel="noopener"
+        <Link
+          to={`/in/${npub}`}
           style={{ fontSize: 14, color: "var(--accent)", textDecoration: "none", fontWeight: 600 }}
         >
           {name} →
-        </a>
+        </Link>
       </div>
     </>
   );

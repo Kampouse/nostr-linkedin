@@ -127,7 +127,7 @@ export default function NotificationsPage() {
           <div className="empty-state" style={{ padding: 48 }}>
             <AtSign size={48} strokeWidth={1} color="var(--text-muted)" />
             <p style={{ fontSize: 16, fontWeight: 600 }}>No notifications yet</p>
-            <p>When someone reacts, reposts, or mentions you, it'll show here.</p>
+            <p>{pubkey ? "When someone reacts, reposts, or mentions you, it'll show here." : "Sign in to see reactions, reposts, and mentions."}</p>
           </div>
         ) : (
           notifs.map((n) => {
