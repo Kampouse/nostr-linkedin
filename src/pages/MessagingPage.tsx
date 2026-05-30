@@ -36,19 +36,25 @@ export default function MessagingPage() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
 
-  // Decrypt a NIP-04 DM
+  // Decrypt a NIP-04 DM — try NIP-46 first (more reliable), then NIP-07
   const decryptDm = useCallback(async (event: Event): Promise<string> => {
     const peer = event.pubkey === pubkey ? event.tags.find(t => t[0] === "p")?.[1]! : event.pubkey;
     if (secretKey) {
       return nip04.decrypt(secretKey, peer, event.content);
     }
-    // NIP-07 extension
-    if (typeof window !== "undefined" && (window as any).nostr?.nip04?.decrypt) {
-      return (window as any).nostr.nip04.decrypt(peer, event.content);
-    }
-    // NIP-46 signer
+    // NIP-46 signer (preferred — promises actually resolve)
     if (signer) {
+      console.log("[messaging] trying NIP-46 decrypt for", event.id.slice(0, 8));
       return signer.nip04Decrypt(peer, event.content);
+    }
+    // NIP-07 extension — with timeout as fallback
+    if (typeof window !== "undefined" && (window as any).nostr?.nip04?.decrypt) {
+      console.log("[messaging] trying NIP-07 decrypt for", event.id.slice(0, 8));
+      const result = await Promise.race([
+        (window as any).nostr.nip04.decrypt(peer, event.content),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("decrypt timeout")), 10_000)),
+      ]);
+      return result as string;
     }
     return "[Encrypted — login to decrypt]";
   }, [pubkey, secretKey, signer]);
@@ -68,29 +74,25 @@ export default function MessagingPage() {
       const all = [...received, ...sent].sort((a, b) => b.created_at - a.created_at);
       console.log("[messaging] fetched", all.length, "DMs");
 
-      // Decrypt all in parallel (batched)
+      // Decrypt serially (extensions choke on parallel calls)
       const grouped = new Map<string, DM[]>();
-      const decryptResults = await Promise.allSettled(
-        all.map(async ev => {
-          const peer = ev.pubkey === pubkey ? ev.tags.find(t => t[0] === "p")?.[1] : ev.pubkey;
-          if (!peer) return null;
-          let plaintext = "";
-          try {
-            plaintext = await decryptDm(ev);
-          } catch (err) {
-            plaintext = "[Could not decrypt]";
-          }
-          return { event: ev, peer, plaintext, createdAt: ev.created_at } as DM;
-        })
-      );
-
-      for (const r of decryptResults) {
-        if (r.status === "fulfilled" && r.value) {
-          const dm = r.value;
-          const existing = grouped.get(dm.peer) || [];
-          existing.push(dm);
-          grouped.set(dm.peer, existing);
+      let decryptCount = 0;
+      for (const ev of all) {
+        const peer = ev.pubkey === pubkey ? ev.tags.find(t => t[0] === "p")?.[1] : ev.pubkey;
+        if (!peer) continue;
+        let plaintext = "";
+        try {
+          plaintext = await decryptDm(ev);
+          decryptCount++;
+          console.log("[messaging] ✓ decrypted", ev.id.slice(0, 8), "→", plaintext.slice(0, 30));
+        } catch (err) {
+          console.warn("[messaging] ✗ decrypt failed for", ev.id.slice(0, 8), err);
+          plaintext = "[Could not decrypt]";
         }
+        const dm: DM = { event: ev, peer, plaintext, createdAt: ev.created_at };
+        const existing = grouped.get(dm.peer) || [];
+        existing.push(dm);
+        grouped.set(dm.peer, existing);
       }
 
       // Sort each conversation by time
@@ -98,7 +100,7 @@ export default function MessagingPage() {
         msgs.sort((a, b) => a.createdAt - b.createdAt);
       }
 
-      console.log("[messaging] decrypted", grouped.size, "conversations");
+      console.log("[messaging] decrypted", decryptCount + "/" + all.length, "msgs,", grouped.size, "conversations");
 
       // Load profiles for all peers
       const peers = [...grouped.keys()];
